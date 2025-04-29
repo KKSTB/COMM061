@@ -112,7 +112,7 @@
                     <select name="example_select">
                         <option value="manual">Select an example...</option>
                         {% for example in examples %}
-                        <option value="{{ example.text }}">Example {{ example.id }}: {{ example.text[:50] }}...</option>
+                        <option value="{{ example.id }}">Example {{ example.id }}: {{ example.text[:50] }}...</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -129,6 +129,10 @@
         <div class="results">
             <h3>Analysis Results:</h3>
             <p><strong>Text analyzed:</strong> {{ results.text }}</p>
+            {% if results.ground_truth %}
+		    <p><strong>Ground Truth:</strong></p>
+		    {{ results.ground_truth|safe }}
+            {% endif %}
             <p><strong>Prediction:</strong></p>
             {{ results.prediction|safe }}
         </div>

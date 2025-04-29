@@ -1,10 +1,21 @@
+import os
 from flask import Flask, render_template, request
 import numpy as np
-import pandas as pd
 import datasets
 import transformers
 import spacy
 import re
+import datetime
+
+
+# Model path
+models_path = './models/'
+# Datasets path
+datasets_path = './datasets/'
+# Location of the record file
+dataset_file_path = os.path.join(datasets_path, 'records.json')
+# Number of example texts to load from surrey-nlp/PLOD-CW-25
+n_example_texts = 20
 
 
 # Define named entities
@@ -33,9 +44,15 @@ tag_colors = {
 }
 
 
-model = transformers.AutoModelForTokenClassification.from_pretrained('./bert_8000/')
-tokenizer = transformers.AutoTokenizer.from_pretrained('./bert_8000/')
-trainer = transformers.Trainer(model, data_collator=transformers.DataCollatorForTokenClassification(tokenizer))
+# Model to host
+model = None
+tokenizer = None
+trainer = None
+
+
+def convert_ner_tags_to_int(dataset):
+    dataset['ner_tag_ids'] = [tag_id_dict[tag] for tag in dataset['ner_tags']]
+    return dataset
 
 
 def tokenize_and_align_tag_ids(dataset):
@@ -125,39 +142,124 @@ def display_named_entity(tokens, tag_ids):
     return spacy.displacy.render(doc, style='ent', options={'colors': tag_colors})
 
 
+def diff_named_entity(tokens, true_tag_ids, pred_tag_ids):
+    doc = spacy.blank('en')(' '.join(tokens))
+
+    char_cnt = prev_char_cnt = 0
+    prev_pred_tag_id = 0
+    start_char_cnt = -1
+    was_wrong = False
+    ents = []
+    for token, true_tag_id, pred_tag_id in zip(tokens, true_tag_ids, pred_tag_ids):
+        token_len = len(token)
+        if true_tag_id != pred_tag_id:
+            # The model made the wrong prediction
+            # Highlight everything wrong
+            if was_wrong:
+                # Highlight everything different
+                if prev_pred_tag_id != pred_tag_id:
+                    ents.append(doc.char_span(start_char_cnt, prev_char_cnt, '(' + tag_id_dict_reverse[prev_pred_tag_id] + ')'))
+                    start_char_cnt = char_cnt
+            else:
+                if prev_pred_tag_id != 0:
+                    ents.append(doc.char_span(start_char_cnt, prev_char_cnt, cls_id_dict_reverse[tag_cls_id_dict[prev_pred_tag_id]]))
+                start_char_cnt = char_cnt
+                was_wrong = True
+        else:
+            # The model made the correct prediction
+            if was_wrong:
+                ents.append(doc.char_span(start_char_cnt, prev_char_cnt, '(' + tag_id_dict_reverse[prev_pred_tag_id] + ')'))
+                start_char_cnt = char_cnt
+                was_wrong = False
+            else:
+                # Highlight by cls of predition
+                if tag_cls_id_dict[pred_tag_id] != tag_cls_id_dict[prev_pred_tag_id]:
+                    if prev_pred_tag_id != 0:
+                        ents.append(doc.char_span(start_char_cnt, prev_char_cnt, cls_id_dict_reverse[tag_cls_id_dict[prev_pred_tag_id]]))
+                    start_char_cnt = char_cnt
+        prev_pred_tag_id = pred_tag_id
+        prev_char_cnt = char_cnt + token_len
+        char_cnt += token_len + 1
+
+    if prev_pred_tag_id != 0:
+        # Case where the sentence ends with non-O tag
+        ents.append(doc.char_span(start_char_cnt, prev_char_cnt, cls_id_dict_reverse[tag_cls_id_dict[prev_pred_tag_id]]))
+    elif was_wrong:
+        ents.append(doc.char_span(start_char_cnt, prev_char_cnt, '(' + tag_id_dict_reverse[prev_pred_tag_id] + ')'))
+
+    doc.ents = ents
+
+    err_tag_colors = tag_colors | {'('+k+')':'red' for k in tag_colors.keys()} | {'(O)':'red'}
+    return spacy.displacy.render(doc, style='ent', options={'colors': err_tag_colors})
+
+
 # Pre-loaded examples
-EXAMPLE_TEXTS = [
-    {
-        'id': 1,
-        'text': 'something called hydrogen deuterium exchange mass spectrometry (HDX-MS)'
-    },
-]
+dataset_example = datasets.load_dataset('surrey-nlp/PLOD-CW-25', split=datasets.ReadInstruction('test', to=n_example_texts))
+dataset_example = dataset_example.map(convert_ner_tags_to_int)
+EXAMPLE_TEXTS = [{'id': idx+1, 'text': ' '.join(tokens)} for (idx, tokens) in enumerate(dataset_example['tokens'])]
 
 
-def requestResults(text):
-    # Split the text into initial tokens
-    tokens = re.findall(r'\b\w+\b|[^\w\s]', text)
-    tag_ids = [0 for token in tokens]
+def requestResults(usr_input):
+    if type(usr_input) is int:
+        # Use example texts
+        text = EXAMPLE_TEXTS[usr_input]['text']
+        tokens = dataset_example['tokens'][usr_input]
+        true_tag_ids = dataset_example['ner_tag_ids'][usr_input]
+    else:
+        # Split the text into initial tokens
+        text = usr_input
+        tokens = re.findall(r'\b\w+\b|[^\w\s]', text)
+        if len(tokens) == 0:
+            # Empty text
+            return {
+                'text': text,
+                'prediction': '',
+            }
+        true_tag_ids = [0 for token in tokens]
 
     # Create dataset object
-    dataset_original = pd.DataFrame({'tokens': [tokens], 'ner_tag_ids': [tag_ids]})
-    dataset_original = datasets.Dataset.from_pandas(dataset_original)
+    dataset_original = datasets.Dataset.from_dict({'tokens': [tokens], 'ner_tag_ids': [true_tag_ids]})
     dataset_tokenized = dataset_original.map(tokenize_and_align_tag_ids, batched=True)
 
     predictions, labels, _ = trainer.predict(dataset_tokenized)
     predictions = np.argmax(predictions, axis=2)
 
     # Remove ignored index (special tokens)
+    true_tag_ids = [
+        [int(l) for (p, l) in zip(prediction, label) if l != ignore_id]
+        for prediction, label in zip(predictions, labels)
+    ][0]
     pred_tag_ids = [
         [int(p) for (p, l) in zip(prediction, label) if l != ignore_id]
         for prediction, label in zip(predictions, labels)
-    ]
+    ][0]
 
-    html = display_named_entity(tokens, pred_tag_ids[0])
-    text = ' '.join(tokens)
+    # Add to record
+    try:
+        dataset_file = datasets.load_dataset("json", data_files=dataset_file_path, split='train')
+    except FileNotFoundError:
+        print(f'Dataset file "{dataset_file_path}" not found. Creating an empty dataset.')
+        dataset_file = None
+
+    dataset_new = datasets.Dataset.from_dict({'utc_time': [str(datetime.datetime.now(datetime.UTC))], 'text': [text], 'tokens': [tokens], 'pred_ner_tag_ids': [pred_tag_ids]})
+    if dataset_file is None:
+        dataset_file = dataset_new
+    else:
+        dataset_file = datasets.concatenate_datasets([dataset_file, dataset_new])
+    dataset_file.to_json(dataset_file_path)
+
+    # Return results
+    if type(usr_input) is int:
+        true_html = display_named_entity(tokens, true_tag_ids)
+        pred_html = diff_named_entity(tokens, true_tag_ids, pred_tag_ids)
+    else:
+        true_html = None
+        pred_html = display_named_entity(tokens, pred_tag_ids)
+        text = ' '.join(tokens)
     return {
         'text': text,
-        'prediction': html,
+        'ground_truth': true_html,
+        'prediction': pred_html,
     }
 
 
@@ -174,13 +276,49 @@ def get_data():
     if request.method == 'POST':
         # Check if using example or manual input
         if 'example_select' in request.form and request.form['example_select'] != 'manual':
-            text = request.form['example_select']
+            usr_input = int(request.form['example_select']) - 1
         else:
-            text = request.form['search']
-        
-        results = requestResults(text)
+            usr_input = request.form['search']
+
+        results = requestResults(usr_input)
         return render_template('home.html', results=results, examples=EXAMPLE_TEXTS)
 
 
+def main():
+    # Prompt for model to host
+    if not os.path.exists(models_path):
+        print(f'Cant find any model to host. Please put the models into {models_path}. E.g.: {os.path.join(models_path, "bert-NER/*.*")}')
+        return
+    model_names = [item for item in sorted(os.listdir(models_path)) if os.path.isdir(os.path.join(models_path, item))]
+    if len(model_names) == 0:
+        print(f'Cant find any model to host. Please put the models into {models_path}. E.g.: {os.path.join(models_path, "bert-NER/*.*")}')
+        return
+
+    if len(model_names) == 1:
+        model_path = os.path.join(models_path, model_names[0])
+    else:
+        while True:
+            try:
+                print('Please choose the model to host:')
+                for idx, model_name in enumerate(model_names):
+                    print(f'{idx+1}: {model_name}')
+                choice = int(input('Choice: '))
+                if choice <= 0 or choice > len(model_names):
+                    raise ValueError()
+                model_path = os.path.join(models_path, model_names[choice-1])
+                break
+            except ValueError:
+                print('Invalid input. Please enter a valid integer.')
+                print()
+
+    global model, tokenizer, trainer
+    model = transformers.AutoModelForTokenClassification.from_pretrained(model_path)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
+    trainer = transformers.Trainer(model, data_collator=transformers.DataCollatorForTokenClassification(tokenizer))
+
+    # Use debug=False to prevent prompting model choice twice
+    app.run(debug=False)
+
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    main()
