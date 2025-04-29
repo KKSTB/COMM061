@@ -8,7 +8,9 @@ import re
 import datetime
 
 
-# Model path
+# Remote model
+huggingface_model = 'kkstb/bert_ner'
+# Local model path
 models_path = './models/'
 # Datasets path
 datasets_path = './datasets/'
@@ -284,18 +286,19 @@ def get_data():
         return render_template('home.html', results=results, examples=EXAMPLE_TEXTS)
 
 
-def main():
-    # Prompt for model to host
+def select_model():
     if not os.path.exists(models_path):
-        print(f'Cant find any model to host. Please put the models into {models_path}. E.g.: {os.path.join(models_path, "bert-NER/*.*")}')
-        return
+        print(f'Cant find any local model. Please put local models into {models_path}. E.g.: {os.path.join(models_path, "bert-NER/*.*")}')
+        print('Using published huggingface model')
+        return huggingface_model
     model_names = [item for item in sorted(os.listdir(models_path)) if os.path.isdir(os.path.join(models_path, item))]
     if len(model_names) == 0:
-        print(f'Cant find any model to host. Please put the models into {models_path}. E.g.: {os.path.join(models_path, "bert-NER/*.*")}')
-        return
+        print(f'Cant find any local model. Please put local models into {models_path}. E.g.: {os.path.join(models_path, "bert-NER/*.*")}')
+        print('Using published huggingface model')
+        return huggingface_model
 
     if len(model_names) == 1:
-        model_path = os.path.join(models_path, model_names[0])
+        return os.path.join(models_path, model_names[0])
     else:
         while True:
             try:
@@ -305,11 +308,18 @@ def main():
                 choice = int(input('Choice: '))
                 if choice <= 0 or choice > len(model_names):
                     raise ValueError()
-                model_path = os.path.join(models_path, model_names[choice-1])
-                break
+                return os.path.join(models_path, model_names[choice-1])
             except ValueError:
                 print('Invalid input. Please enter a valid integer.')
                 print()
+
+    print('Using published huggingface model')
+    return huggingface_model
+
+
+def main():
+    # Prompt for model to host
+    model_path = select_model()
 
     global model, tokenizer, trainer
     model = transformers.AutoModelForTokenClassification.from_pretrained(model_path)
