@@ -1,6 +1,4 @@
-datasets
 Flask
-numpy==1.26.4
-pandas
+numpy<2
 spacy
 transformers

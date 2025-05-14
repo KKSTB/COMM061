@@ -297,24 +297,22 @@ def select_model():
         print('Using published huggingface model')
         return huggingface_model
 
-    if len(model_names) == 1:
-        return os.path.join(models_path, model_names[0])
-    else:
-        while True:
-            try:
-                print('Please choose the model to host:')
-                for idx, model_name in enumerate(model_names):
-                    print(f'{idx+1}: {model_name}')
-                choice = int(input('Choice: '))
-                if choice <= 0 or choice > len(model_names):
-                    raise ValueError()
-                return os.path.join(models_path, model_names[choice-1])
-            except ValueError:
-                print('Invalid input. Please enter a valid integer.')
-                print()
-
-    print('Using published huggingface model')
-    return huggingface_model
+    while True:
+        try:
+            print('Please choose the model to host:')
+            print('0: (published huggingface model)')
+            for idx, model_name in enumerate(model_names):
+                print(f'{idx+1}: {model_name}')
+            choice = int(input('Choice: '))
+            if choice < 0 or choice > len(model_names):
+                raise ValueError()
+            if choice == 0:
+                print('Using published huggingface model')
+                return huggingface_model
+            return os.path.join(models_path, model_names[choice-1])
+        except ValueError:
+            print('Invalid input. Please enter a valid integer.')
+            print()
 
 
 def main():
